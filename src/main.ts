@@ -3,7 +3,7 @@ import './style.css';
 import { config } from './config';
 import { createDissolveMaterials, type DissolveHandle } from './dissolve';
 
-type ItemKind = 'building' | 'car' | 'tree';
+type ItemKind = 'building' | 'car' | 'tree' | 'npc';
 type Item = {
   group: THREE.Group;
   kind: ItemKind;
@@ -13,6 +13,8 @@ type Item = {
   progress: number;
   occlusion: number;
   dissolve?: DissolveHandle;
+  velocity?: THREE.Vector3;
+  stealCooldown?: number;
 };
 
 const mapSize = config.mapSize;
@@ -75,6 +77,7 @@ for (let i = -3; i <= 3; i++) {
 const items: Item[] = [];
 const buildingColors = ['#d9b99b', '#b8c6d9', '#d8d6c7', '#c4b5d9', '#e4c6a6', '#a8c9c3'];
 const carColors = ['#e85d5d', '#f4c95d', '#4e8edb', '#f0f0e8', '#4caa83'];
+const npcColors = ['#f59e0b', '#22c55e', '#38bdf8', '#f472b6'];
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 
 function addBuilding(x: number, z: number, w: number, d: number, h: number) {
@@ -98,7 +101,8 @@ function addBuilding(x: number, z: number, w: number, d: number, h: number) {
   }
   group.position.set(x, 0, z);
   scene.add(group);
-  items.push({ group, kind: 'building', size: Math.max(w, d, h * 0.38), gone: false, absorbing: false, progress: 0, occlusion: 0, dissolve });
+  // Buildings need a real growth step before they become edible.
+  items.push({ group, kind: 'building', size: Math.max(w, d, h * 0.55, 2), gone: false, absorbing: false, progress: 0, occlusion: 0, dissolve });
 }
 
 function addCar(x: number, z: number) {
@@ -142,6 +146,40 @@ function addTree(x: number, z: number) {
   items.push({ group, kind: 'tree', size: 1.1, gone: false, absorbing: false, progress: 0, occlusion: 0 });
 }
 
+function addNpc(x: number, z: number) {
+  const group = new THREE.Group();
+  const color = npcColors[Math.floor(Math.random() * npcColors.length)];
+  const body = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.2, 0.28, 0.68, 8),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.7 })
+  );
+  body.position.y = 0.34;
+  body.castShadow = true;
+  group.add(body);
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(0.22, 12, 8),
+    new THREE.MeshStandardMaterial({ color: '#f2b28d', roughness: 0.82 })
+  );
+  head.position.y = 0.86;
+  head.castShadow = true;
+  group.add(head);
+  group.position.set(x, 0, z);
+  scene.add(group);
+  const velocity = new THREE.Vector3(rand(-1, 1), 0, rand(-1, 1));
+  velocity.normalize().multiplyScalar(rand(0.55, 0.9));
+  items.push({
+    group,
+    kind: 'npc',
+    size: 0.72,
+    gone: false,
+    absorbing: false,
+    progress: 0,
+    occlusion: 0,
+    velocity,
+    stealCooldown: rand(2.5, 5),
+  });
+}
+
 for (let x = -cityHalf; x <= cityHalf; x += 5) {
   for (let z = -cityHalf; z <= cityHalf; z += 5) {
     if (Math.abs(x % 10) < 2 || Math.abs(z % 10) < 2) continue;
@@ -152,6 +190,7 @@ for (let x = -cityHalf; x <= cityHalf; x += 5) {
     const w = rand(1.5, 2.9), d = rand(1.5, 2.9), h = rand(2.5, 10);
     addBuilding(x + rand(-1, 1), z + rand(-1, 1), w, d, h);
     if (Math.random() < 0.8) addCar(x + rand(-2, 2), z + rand(-2, 2));
+    if (Math.random() < 0.35) addNpc(x + rand(-2, 2), z + rand(-2, 2));
   }
 }
 
@@ -228,11 +267,38 @@ let radius = 1.1;
 const XP_PER_LEVEL = 100;
 let evolutionXp = 0;
 let score = 0;
-let time = 90;
+const GAME_TIME = 75;
+let time = GAME_TIME;
 let ended = false;
 let last = performance.now();
 const $ = (id: string) => document.getElementById(id)!;
 $('restart').addEventListener('click', () => location.reload());
+
+let audioContext: AudioContext | undefined;
+function unlockAudio() {
+  audioContext ??= new AudioContext();
+  if (audioContext.state === 'suspended') void audioContext.resume();
+}
+
+addEventListener('pointerdown', unlockAudio, { passive: true });
+
+function playConsumeSound(kind: ItemKind) {
+  if (!audioContext || audioContext.state !== 'running') return;
+  const now = audioContext.currentTime;
+  const baseFrequency = kind === 'building' ? 78 : kind === 'npc' ? 300 : kind === 'car' ? 190 : 240;
+  const oscillator = audioContext.createOscillator();
+  const gain = audioContext.createGain();
+  oscillator.type = 'sine';
+  oscillator.frequency.setValueAtTime(baseFrequency, now);
+  oscillator.frequency.exponentialRampToValueAtTime(baseFrequency * 1.8, now + 0.1);
+  oscillator.frequency.exponentialRampToValueAtTime(baseFrequency * 0.62, now + 0.42);
+  gain.gain.setValueAtTime(0.001, now);
+  gain.gain.exponentialRampToValueAtTime(kind === 'building' ? 0.18 : 0.11, now + 0.025);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + 0.46);
+  oscillator.connect(gain).connect(audioContext.destination);
+  oscillator.start(now);
+  oscillator.stop(now + 0.48);
+}
 
 function updateGrowthUi() {
   const currentXp = evolutionXp % XP_PER_LEVEL;
@@ -285,19 +351,50 @@ function updateBuildingOcclusion(dt: number) {
   }
 }
 
-function finishItem(item: Item) {
+function removeItem(item: Item) {
+  if (item.gone) return;
   item.gone = true;
   const index = items.indexOf(item);
   if (index >= 0) items.splice(index, 1);
   scene.remove(item.group);
   disposeObject(item.group);
   item.dissolve?.depthMaterial.dispose();
-  const growth = (item.kind === 'building' ? 19 : 8) * config.growthSpeed;
-  score += item.kind === 'building' ? 25 : item.kind === 'car' ? 10 : 5;
+}
+
+function finishItem(item: Item) {
+  removeItem(item);
+  const growthByKind: Record<ItemKind, number> = { building: 16, car: 5, tree: 4, npc: 6 };
+  const growth = growthByKind[item.kind] * config.growthSpeed;
+  score += item.kind === 'building' ? 25 : item.kind === 'car' ? 10 : item.kind === 'npc' ? 12 : 5;
   evolutionXp += growth;
   radius += growth / XP_PER_LEVEL;
   $('score').textContent = String(score);
   updateGrowthUi();
+  playConsumeSound(item.kind);
+}
+
+function updateNpcs(dt: number) {
+  for (let index = items.length - 1; index >= 0; index--) {
+    const npc = items[index];
+    if (npc.kind !== 'npc' || npc.absorbing || !npc.velocity) continue;
+    const nearbyCar = items.find((candidate) => {
+      if (candidate.kind !== 'car' || candidate.absorbing) return false;
+      return npc.group.position.distanceTo(candidate.group.position) < 7;
+    });
+    if (nearbyCar) {
+      const direction = nearbyCar.group.position.clone().sub(npc.group.position).setY(0).normalize();
+      npc.velocity.lerp(direction.multiplyScalar(0.78), Math.min(dt * 1.8, 1));
+    }
+    npc.group.position.addScaledVector(npc.velocity, dt);
+    if (Math.abs(npc.group.position.x) > targetLimit) npc.velocity.x *= -1;
+    if (Math.abs(npc.group.position.z) > targetLimit) npc.velocity.z *= -1;
+    npc.group.rotation.y = Math.atan2(npc.velocity.x, npc.velocity.z);
+    npc.stealCooldown = (npc.stealCooldown ?? 0) - dt;
+    if (npc.stealCooldown <= 0 && nearbyCar && npc.group.position.distanceTo(nearbyCar.group.position) < 1.2) {
+      removeItem(nearbyCar);
+      npc.stealCooldown = rand(3.5, 6);
+    }
+  }
 }
 
 function animate(now: number) {
@@ -327,6 +424,7 @@ function animate(now: number) {
   });
 
   if (!ended) {
+    updateNpcs(dt);
     time = Math.max(0, time - dt);
     $('time').textContent = String(Math.ceil(time));
     if (time <= 0) {
