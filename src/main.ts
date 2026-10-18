@@ -27,7 +27,8 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color('#0b1230');
 scene.fog = new THREE.Fog('#0b1230', mapSize * 0.38, mapSize * 1.14);
 const camera = new THREE.PerspectiveCamera(48, innerWidth / innerHeight, 0.1, mapSize * 1.45);
-const cameraOffset = new THREE.Vector3(18, 24, 28);
+// 俯视角约 75°：距离正上方 90° 向玩家方向倾斜 15°。
+const cameraOffset = new THREE.Vector3(6, 37.3, 8);
 const cameraFocus = new THREE.Vector3();
 camera.position.copy(cameraOffset);
 camera.lookAt(cameraFocus);
